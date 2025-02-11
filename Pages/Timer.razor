@@ -1,0 +1,264 @@
+﻿@page "/timer"
+
+<PageTitle>Timer</PageTitle>
+
+<h1>Timer</h1>
+
+<!-- Load & Save Buttons -->
+<button @onclick="SaveBlocksToJson">💾 Save Blocks</button>
+<button @onclick="LoadBlocksFromJson">📂 Load Blocks</button>
+
+<Accordion>
+    @foreach (var block in timeBlocks)
+    {
+        <AccordionItem>
+            <TitleTemplate>
+                <Icon Name="IconName.ClockFill" Class="me-1" />
+                <input type="text" @bind="block.Title" placeholder="Block Name" class="block-title" />
+            </TitleTemplate>
+            <Content>
+                <label>Block Duration:</label>
+                <input type="number" value="@block.BlockDuration" @onchange="e => EditBlockTime(block, e)" />
+                <select @bind="block.BlockUnit">
+                    <option value="Minutes">Minutes</option>
+                    <option value="Hours">Hours</option>
+                </select>
+                <br />
+
+                <button @onclick="() => StartBlock(block)" disabled="@block.IsRunning">▶ Start</button>
+                <button @onclick="() => PauseBlock(block)" disabled="@(block.CurrentTimer == null)">⏸ Pause</button>
+                <button @onclick="() => DeleteBlock(block)">🗑 Delete Block</button>
+
+                <h3>Timers</h3>
+                @foreach (var timer in block.Timers)
+                {
+                    <div class="timer-item">
+                        <b>@timer.Title</b>
+                        <input type="number" @bind="timer.NewDuration" placeholder="Enter time" />
+                        <button @onclick="() => SetTimerDuration(timer)">✔ Set Timer</button>
+                        <select @bind="timer.TimerUnit">
+                            <option value="Seconds">Seconds</option>
+                            <option value="Minutes">Minutes</option>
+                        </select>
+                        <p>Time Remaining: @timer.GetFormattedTimeRemaining()</p>
+                        <button @onclick="() => DeleteTimer(block, timer)">🗑 Delete</button>
+                    </div>
+                }
+
+                <button @onclick="() => AddTimerToBlock(block)">+ Add Timer</button>
+            </Content>
+        </AccordionItem>
+    }
+</Accordion>
+
+<button @onclick="AddNewTimeBlock">+ New Time Block</button>
+
+<style>
+    .timer-item {
+        background: #f4f4f4;
+        padding: 8px;
+        margin: 5px 0;
+        border-radius: 4px;
+    }
+
+    input {
+        width: 80px;
+        margin-left: 5px;
+    }
+
+    .block-title {
+        width: 200px;
+        font-size: 18px;
+        font-weight: bold;
+    }
+</style>
+
+@code {
+    private List<TimeBlock> timeBlocks = new List<TimeBlock>();
+
+    public void AddNewTimeBlock()
+    {
+        timeBlocks.Add(new TimeBlock("New Block", 30, "Minutes"));
+        StateHasChanged();
+    }
+    public void SetTimerDuration(TimerItem timer)
+    {
+        if (timer.NewDuration > 0)
+        {
+            timer.Duration = timer.NewDuration;
+            timer.DurationRemaining = timer.GetDurationInSeconds(); // Reset remaining time
+            StateHasChanged();
+        }
+    }
+
+    public void AddTimerToBlock(TimeBlock block)
+    {
+        if (block.GetTotalTimerDuration() >= block.GetBlockDurationInSeconds())
+        {
+            return; // Prevent adding timers beyond block time
+        }
+
+        block.Timers.Add(new TimerItem($"Timer {block.Timers.Count + 1}", 5, "Minutes"));
+        StateHasChanged();
+    }
+
+    public void StartBlock(TimeBlock block)
+    {
+        if (block.IsRunning || block.Timers.Count == 0)
+            return;
+
+        block.CurrentTimerIndex = 0;
+        StartNextTimer(block);
+    }
+
+    public void StartNextTimer(TimeBlock block)
+    {
+        if (block.CurrentTimerIndex >= block.Timers.Count)
+        {
+            block.IsRunning = false; // Block completed
+            return;
+        }
+
+        var timer = block.Timers[block.CurrentTimerIndex];
+        block.CurrentTimer = timer;
+        timer.Start(CountDownTimer, () => StartNextTimer(block));
+        StateHasChanged();
+    }
+
+    public void PauseBlock(TimeBlock block)
+    {
+        block.CurrentTimer?.Pause();
+        StateHasChanged();
+    }
+
+    public void CountDownTimer(TimerItem timer)
+    {
+        InvokeAsync(StateHasChanged);
+    }
+
+    public void EditBlockTime(TimeBlock block, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int newTime))
+        {
+            block.BlockDuration = newTime;
+            StateHasChanged();
+        }
+    }
+
+    public void EditTimerTime(TimeBlock block, TimerItem timer, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int newTime))
+        {
+            timer.Duration = newTime;
+            if (block.GetTotalTimerDuration() > block.GetBlockDurationInSeconds())
+            {
+                timer.Duration = block.BlockDuration;
+            }
+            StateHasChanged();
+        }
+    }
+
+    public void DeleteTimer(TimeBlock block, TimerItem timer)
+    {
+        block.Timers.Remove(timer);
+        StateHasChanged();
+    }
+
+    public void DeleteBlock(TimeBlock block)
+    {
+        timeBlocks.Remove(block);
+        StateHasChanged();
+    }
+
+    public void SaveBlocksToJson()
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(timeBlocks);
+        System.IO.File.WriteAllText("savedBlocks.json", json);
+    }
+
+    public void LoadBlocksFromJson()
+    {
+        if (System.IO.File.Exists("savedBlocks.json"))
+        {
+            var json = System.IO.File.ReadAllText("savedBlocks.json");
+            timeBlocks = System.Text.Json.JsonSerializer.Deserialize<List<TimeBlock>>(json) ?? new List<TimeBlock>();
+            StateHasChanged();
+        }
+    }
+
+    public class TimeBlock
+    {
+        public string Title { get; set; }
+        public int BlockDuration { get; set; }
+        public string BlockUnit { get; set; }
+        public List<TimerItem> Timers { get; set; }
+        public bool IsRunning { get; set; } = false;
+        public TimerItem? CurrentTimer { get; set; }
+        public int CurrentTimerIndex { get; set; }
+
+        public TimeBlock(string title, int duration, string unit)
+        {
+            Title = title;
+            BlockDuration = duration;
+            BlockUnit = unit;
+            Timers = new List<TimerItem>();
+        }
+
+        public int GetBlockDurationInSeconds() =>
+            BlockUnit == "Minutes" ? BlockDuration * 60 : BlockDuration * 3600;
+
+        public int GetTotalTimerDuration() =>
+            Timers.Sum(t => t.GetDurationInSeconds());
+    }
+
+    public class TimerItem
+    {
+        public string Title { get; set; }
+        public int Duration { get; set; }
+        public int DurationRemaining { get; set; }
+        public string TimerUnit { get; set; }
+        private System.Timers.Timer? timer;
+        public int NewDuration { get; set; }
+
+        public TimerItem(string title, int duration, string unit)
+        {
+            Title = title;
+            Duration = duration;
+            DurationRemaining = duration;
+            TimerUnit = unit;
+        }
+
+        public int GetDurationInSeconds() => TimerUnit == "Minutes" ? Duration * 60 : Duration;
+
+        public void Start(Action<TimerItem> onTick, Action onComplete)
+        {
+            int interval = TimerUnit == "Minutes" ? 60000 : 1000; // 1 minute or 1 second
+            timer = new System.Timers.Timer(interval);
+            timer.Elapsed += (s, e) =>
+            {
+                if (DurationRemaining > 0) DurationRemaining--;
+                else
+                {
+                    timer?.Stop();
+                    onComplete();
+                }
+                onTick(this);
+            };
+            timer.Start();
+        }
+
+
+        public string GetFormattedTimeRemaining()
+        {
+            int minutes = DurationRemaining / 60;
+            int seconds = DurationRemaining % 60;
+            return $"{minutes:D2}:{seconds:D2}"; // Formats as MM:SS
+        }
+
+
+        public void Pause()
+        {
+            timer?.Stop();
+        }
+    }
+}
