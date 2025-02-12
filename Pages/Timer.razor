@@ -1,4 +1,6 @@
-﻿@page "/timer"
+﻿@inject IJSRuntime JS
+
+@page "/timer"
 
 <PageTitle>Timer</PageTitle>
 
@@ -41,10 +43,15 @@
                             <option value="Minutes">Minutes</option>
                         </select>
                         <p>Time Remaining: @timer.GetFormattedTimeRemaining()</p>
+
+                        @if (timer.IsBeeping)
+                        {
+                            <button @onclick="() => AcknowledgeBeep(block, timer)">🔕 Acknowledge</button>
+                        }
+
                         <button @onclick="() => DeleteTimer(block, timer)">🗑 Delete</button>
                     </div>
                 }
-
                 <button @onclick="() => AddTimerToBlock(block)">+ Add Timer</button>
             </Content>
         </AccordionItem>
@@ -74,19 +81,34 @@
 </style>
 
 @code {
+
     private List<TimeBlock> timeBlocks = new List<TimeBlock>();
+
+    public async Task AcknowledgeBeep(TimeBlock block, TimerItem timer)
+    {
+        timer.StopBeeping();
+        await Task.Delay(500);
+        await StartNextTimer(block);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    public async Task PlayBeep(int frequency = 440, int duration = 500)
+    {
+        await JS.InvokeVoidAsync("playBeep", frequency, duration);
+    }
 
     public void AddNewTimeBlock()
     {
         timeBlocks.Add(new TimeBlock("New Block", 30, "Minutes"));
         StateHasChanged();
     }
+
     public void SetTimerDuration(TimerItem timer)
     {
         if (timer.NewDuration > 0)
         {
             timer.Duration = timer.NewDuration;
-            timer.DurationRemaining = timer.GetDurationInSeconds(); // Reset remaining time
+            timer.DurationRemaining = timer.GetDurationInSeconds();
             StateHasChanged();
         }
     }
@@ -95,7 +117,7 @@
     {
         if (block.GetTotalTimerDuration() >= block.GetBlockDurationInSeconds())
         {
-            return; // Prevent adding timers beyond block time
+            return;
         }
 
         block.Timers.Add(new TimerItem($"Timer {block.Timers.Count + 1}", 5, "Minutes"));
@@ -111,19 +133,32 @@
         StartNextTimer(block);
     }
 
-    public void StartNextTimer(TimeBlock block)
+    public async Task StartNextTimer(TimeBlock block)
     {
         if (block.CurrentTimerIndex >= block.Timers.Count)
         {
-            block.IsRunning = false; // Block completed
+            block.IsRunning = false;
+            await InvokeAsync(StateHasChanged);
             return;
         }
 
         var timer = block.Timers[block.CurrentTimerIndex];
         block.CurrentTimer = timer;
-        timer.Start(CountDownTimer, () => StartNextTimer(block));
-        StateHasChanged();
+        block.CurrentTimerIndex++;
+
+        timer.Start(
+            async () =>
+            {
+                await PlayBeep(440, 500);
+                await InvokeAsync(StateHasChanged);
+            },
+            async () => await InvokeAsync(StateHasChanged)
+        );
+
+        await InvokeAsync(StateHasChanged);
     }
+
+
 
     public void PauseBlock(TimeBlock block)
     {
@@ -172,17 +207,69 @@
 
     public void SaveBlocksToJson()
     {
-        var json = System.Text.Json.JsonSerializer.Serialize(timeBlocks);
+        var options = new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true, 
+                IgnoreReadOnlyProperties = true 
+            };
+
+        string json = System.Text.Json.JsonSerializer.Serialize(timeBlocks, options);
         System.IO.File.WriteAllText("savedBlocks.json", json);
     }
 
+
     public void LoadBlocksFromJson()
     {
-        if (System.IO.File.Exists("savedBlocks.json"))
+        string filePath = "savedBlocks.json";
+
+        try
         {
-            var json = System.IO.File.ReadAllText("savedBlocks.json");
-            timeBlocks = System.Text.Json.JsonSerializer.Deserialize<List<TimeBlock>>(json) ?? new List<TimeBlock>();
-            StateHasChanged();
+            if (!System.IO.File.Exists(filePath))
+            {
+                Console.WriteLine("JSON file does not exist!");
+                return;
+            }
+
+            string json = System.IO.File.ReadAllText(filePath);
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                Console.WriteLine("JSON file is empty!");
+                return;
+            }
+
+            var options = new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                IncludeFields = true,
+                IgnoreNullValues = true
+            };
+
+            try
+            {
+                timeBlocks = System.Text.Json.JsonSerializer.Deserialize<List<TimeBlock>>(json, options) ?? new List<TimeBlock>();
+            }
+            catch (Exception innerEx)
+            {
+                Console.WriteLine($"JSON Deserialization Error: {innerEx.Message}");
+                Console.WriteLine($"Stack Trace: {innerEx.StackTrace}");
+                return;
+            }
+
+            foreach (var block in timeBlocks)
+            {
+                foreach (var timer in block.Timers)
+                {
+                    timer.DurationRemaining = timer.GetDurationInSeconds();
+                }
+            }
+
+            InvokeAsync(StateHasChanged); 
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ Unexpected Error loading JSON: {ex.Message}");
+            Console.WriteLine($"❌ Stack Trace: {ex.StackTrace}");
         }
     }
 
@@ -195,6 +282,14 @@
         public bool IsRunning { get; set; } = false;
         public TimerItem? CurrentTimer { get; set; }
         public int CurrentTimerIndex { get; set; }
+
+        public TimeBlock()
+        {
+            Title = string.Empty;
+            BlockDuration = 0;
+            BlockUnit = "Minutes";
+            Timers = new List<TimerItem>();
+        }
 
         public TimeBlock(string title, int duration, string unit)
         {
@@ -217,48 +312,74 @@
         public int Duration { get; set; }
         public int DurationRemaining { get; set; }
         public string TimerUnit { get; set; }
-        private System.Timers.Timer? timer;
         public int NewDuration { get; set; }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        private System.Timers.Timer? timer;
+
+        public bool IsBeeping { get; private set; } // ✅ Track if alarm is active
+
+        public TimerItem()
+        {
+            Title = string.Empty;
+            Duration = 0;
+            DurationRemaining = 0;
+            TimerUnit = "Seconds";
+            NewDuration = 0;
+            IsBeeping = false;
+        }
 
         public TimerItem(string title, int duration, string unit)
         {
             Title = title;
             Duration = duration;
-            DurationRemaining = duration;
+            DurationRemaining = GetDurationInSeconds();
             TimerUnit = unit;
+            IsBeeping = false;
         }
 
         public int GetDurationInSeconds() => TimerUnit == "Minutes" ? Duration * 60 : Duration;
 
-        public void Start(Action<TimerItem> onTick, Action onComplete)
+        public void Start(Func<Task> onBeep, Func<Task> onTick)
         {
-            int interval = TimerUnit == "Minutes" ? 60000 : 1000; // 1 minute or 1 second
-            timer = new System.Timers.Timer(interval);
-            timer.Elapsed += (s, e) =>
+            timer = new System.Timers.Timer(1000);
+            timer.Elapsed += async (s, e) =>
             {
-                if (DurationRemaining > 0) DurationRemaining--;
+                if (DurationRemaining > 0)
+                {
+                    DurationRemaining--;
+                    await onTick();
+                }
                 else
                 {
                     timer?.Stop();
-                    onComplete();
+                    IsBeeping = true;
+                    while (IsBeeping)
+                    {
+                        await onBeep();
+                        await Task.Delay(1000);
+                    }
                 }
-                onTick(this);
             };
             timer.Start();
         }
 
+        public void StopBeeping()
+        {
+            IsBeeping = false;
+        }
 
         public string GetFormattedTimeRemaining()
         {
             int minutes = DurationRemaining / 60;
             int seconds = DurationRemaining % 60;
-            return $"{minutes:D2}:{seconds:D2}"; // Formats as MM:SS
+            return $"{minutes:D2}:{seconds:D2}";
         }
-
 
         public void Pause()
         {
             timer?.Stop();
         }
     }
+
 }
